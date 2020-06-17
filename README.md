@@ -1,2 +1,5 @@
 # advpl_pub
 Fontes Advpl
+AO UTILIZAR OS FONTES, FAVOR MANTER OS CRÉDITOS DOS AUTORES!
+
+Carlos Abreu
