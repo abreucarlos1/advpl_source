@@ -72,7 +72,11 @@ User Function GER_BOL
 
     oMarkBrow:AddLegend("ALLTRIM(SE1->E1_ZNOSNUM) == '' .AND. SE1->E1_VENCREA < Date() ","BLUE"       ,"TÍTULO VENCIDO E SEM BOLETO GERADO")
 
-    oMarkBrow:AddButton("Imprimir"    , { || MsgRun('Coletando dados','Boletos',{|| Imp_mark() }) },,,, .F., 2 )
+   // oMarkBrow:AddButton("Imprimir"    , { || MsgRun('Coletando dados','Boletos',{|| Imp_mark() }) },,,, .F., 2 )
+
+	oMarkBrow:AddButton("Imprimir"    , { || Processa({|| Imp_mark()}, "Filtrando...") },,,, .F., 2 )
+
+	
 
     oMarkBrow:DisableDetails()
 
@@ -104,7 +108,10 @@ Static Function Imp_mark()
 
     Local aArea    := SE1->( GetArea() )
     Local cMarca   := oMarkBrow:Mark()
-   
+	Local nRegs := 0
+	Local nAtu := 0
+	Local aRegSE1 := {}
+
     Private cAlias := ""
 	Private aDadosTit
 	Private aDadosBanco
@@ -121,12 +128,17 @@ Static Function Imp_mark()
 	Private nNossoNum := 0
 	Private cQuery := ''
     Private lStartPrint := .F.
+	Private nCmp0
+	Private nCmp1
+	Private nCmp2
+	Private nCmp3
+	Private nCmp4
 
     Private dDataGer  := Date()
     Private cHoraGer  := Time()
     Private cNomeUsr  := UsrFullName(RetCodUsr())
 
-    //INFORMAÇÕES DA EMPRESA
+   //INFORMAÇÕES DA EMPRESA
 	Private aDadosEmp    := {ALLTRIM(SM0->M0_NOMECOM),; 							//Nome e CNPJ da empresa[1]
 	ALLTRIM(SM0->M0_ENDCOB),; 														//Endereço[2]
 	AllTrim(SM0->M0_BAIRCOB)+" - "+AllTrim(SM0->M0_CIDCOB)+" - "+SM0->M0_ESTCOB ,; 	//Complemento[3]
@@ -138,10 +150,416 @@ Static Function Imp_mark()
 	"I.E.: "+Subs(SM0->M0_INSC,1,3)+"."+Subs(SM0->M0_INSC,4,3)+"."+ ;
 	Subs(SM0->M0_INSC,7,3)+"."+Subs(SM0->M0_INSC,10,3)}  							//I.E[7]
 
+
+    //E1_FILIAL+E1_CLIENTE+E1_LOJA+E1_PREFIXO+E1_NUM+E1_PARCELA+E1_TIPO
+    nCmp0 := TAMSX3("E1_FILIAL")[1]+1
+    nCmp1 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+1
+    nCmp2 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+TAMSX3("E1_NUM")[1]+1
+    nCmp3 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+TAMSX3("E1_NUM")[1]+TAMSX3("E1_PARCELA")[1]+1
+    nCmp4 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+1
+
+
 	dbSelectArea("SE1")
     
 	SE1->( dbGoTop() )
     
+	While !SE1->( Eof() )
+        //Caso esteja marcado, aumenta o contador
+        If oMarkBrow:IsMark(cMarca)
+
+			nRegs ++
+
+			aadd(aRegSE1,{SE1->E1_PREFIXO,SE1->E1_NUM,SE1->E1_PARCELA,SE1->E1_TIPO})
+
+		endif
+
+        //Pulando registro
+        SE1->( dbSkip() )
+
+	EndDo
+
+	//dbSelectArea("SE1")
+
+	ProcRegua(nRegs)
+    
+	//SE1->( dbGoTop() )
+
+	for i:=1 to Len(aRegSE1)
+
+		dbSelectArea("SE1")
+
+		SE1->(dbSetOrder(1))
+
+		SE1->( DbSeek( xFilial()+aRegSE1[i][1]+aRegSE1[i][2]+aRegSE1[i][3]+aRegSE1[i][4]) )
+
+           //caso o portador esteja vazio, preenche
+            IF EMPTY(SE1->E1_PORTADO)
+
+                RecLock( "SE1" , .F. )
+                    SE1->E1_PORTADO := MV_PAR18
+                    SE1->E1_AGEDEP := MV_PAR19
+                    SE1->E1_CONTA := MV_PAR20
+                MsUnlock()
+            
+            ENDIF
+
+            dbSelectArea("SA6")
+
+            SA6->(dbSetOrder(1))
+
+            If !(SA6->( DbSeek( xFilial()+SE1->(E1_PORTADO+E1_AGEDEP+E1_CONTA) ) ))
+                
+                MsgStop('O banco ' + SE1->E1_PORTADO + ' não existe no cadastro de bancos, o boleto não será '+;
+                'impresso corretamente. Verifique título '+ SE1->E1_PREFIXO+'-'+SE1->E1_NUM )
+                exit
+            
+            Endif
+
+            // faz checagem
+            if ( EMPTY( SA6->A6_CARTEIR ) .OR. EMPTY( SA6->A6_COD_BC ) )
+                
+                MsgStop('O campo Carteira ou Numero do Banco, do cadastro de bancos está em branco. O boleto '+;
+                'não poderá ser gerado. Verifique o Banco '+SA6->A6_COD + ' Agencia ' + SA6->A6_AGENCIA + ;
+                SA6->A6_NUMCON + '.' )
+                exit
+            
+            endif
+
+			dbselectarea("SA1")
+			
+			SA1->( DbSetOrder(1) )
+			
+			SA1->( DbSeek(xFilial()+SE1->(E1_CLIENTE+E1_LOJA)) )
+
+            cctdModf := SA6->A6_DVCTA
+            
+            if ( npos := at("-",SA6->A6_NUMCON) )
+
+                cctaModf := substr( SA6->A6_NUMCON,1 , at("-",SA6->A6_NUMCON)-1 )
+            
+            else
+                
+                cctaModf := ALLTRIM(SA6->A6_NUMCON)
+                
+            endif
+
+            dbselectarea("SEE")
+            
+            SEE->( DbSetOrder(1) )
+
+            SEE->( DbSeek(xFilial()+SA6->(A6_COD+A6_AGENCIA+A6_NUMCON)+'001')) ///utilizado no Banco do Brasil
+
+            aDadosBanco  := {SA6->A6_NUMBCO,;               //Numero do Banco  [1]
+            alltrim(SA6->A6_NREDUZ),;               		//Nome do Banco    [2]
+            SUBSTR(SA6->A6_AGENCIA, 1, 4),;               	//Agência          [3]
+            alltrim(SA6->A6_DVAGE),;                		//Dig Agencia      [4]
+            cctaModf,;               						//Conta Corrente   [5]
+            cctdModf,;               						//Dígito da conta corrente [6]
+            SA6->A6_CARTEIR,;                               //Carteira         [7]
+            "logo_" + alltrim(SA6->A6_NUMBCO) + ".png",;    //LOGOTIPO BANCO   [8] logo_codigobanco.bmp
+            ALLTRIM(SEE->EE_CODEMP)}						//CODIGO convenio [9] SANTANDER
+
+            If Empty(SA1->A1_ENDCOB)
+                aDatSacado   := {AllTrim(SA1->A1_NOME),;      	//Razão Social
+                AllTrim(SA1->A1_COD ),;      					//Código
+                AllTrim(SA1->A1_END )+" - "+SA1->A1_BAIRRO,;      //Endereço
+                AllTrim(SA1->A1_MUN ),;      					//Cidade
+                SA1->A1_EST,;      								//Estado
+                SA1->A1_CEP,;      								// CEP
+                SA1->A1_CGC,;
+                SA1->A1_PESSOA }
+            Else
+                aDatSacado   := {AllTrim(SA1->A1_NOME)            	,;   	// [1]Razão Social
+                AllTrim(SA1->A1_COD )                               ,;   	// [2]Código
+                AllTrim(SA1->A1_ENDCOB)+" - "+AllTrim(SA1->A1_BAIRROC),;   	// [3]Endereço
+                AllTrim(SA1->A1_MUNC)	                            ,;   	// [4]Cidade
+                SA1->A1_ESTC	                                    ,;   	// [5]Estado
+                SA1->A1_CEPC                                        ,;   	// [6]CEP
+                SA1->A1_CGC											,;		// [7]CGC
+                SA1->A1_PESSOA}												// [8]PESSOA
+            Endif
+
+            _nVlrAbat   :=  SomaAbat( SE1->E1_PREFIXO,SE1->E1_NUM,SE1->E1_PARCELA,"R",1,,SE1->E1_CLIENTE,SE1->E1_LOJA )
+            
+            _valorTit   := (SE1->E1_VALOR - _nVlrAbat )
+            
+            _vlrJurosDia := ( (SE1->E1_VALOR - _nVlrAbat)*0.0015 )
+
+			//CASO O CAMPO NUMBCO ESTEJA VAZIO, GERA O NOSSO NUMERO CONFORME REGISTRO DO BANCO (E1_NUMBCO)
+			If Empty(SE1->E1_NUMBCO) .OR. val(SE1->E1_NUMBCO) <= 0
+
+
+				cQuery := " SELECT EE_ZNOSNUM AS NOSSONUM, EE_CODEMP FROM SEE010 "
+				cQuery += " WHERE EE_CONTA = '"+SA6->A6_NUMCON+"' "
+				cQuery += " AND EE_AGENCIA = '"+SA6->A6_AGENCIA+"'  "
+				cQuery += " AND EE_CODIGO = '"+SA6->A6_NUMBCO+"'  "
+
+                if alltrim(SA6->A6_NUMBCO) == "001" //Banco do Brasil
+                    
+                    cQuery += " AND EE_SUBCTA = '002' "	
+                
+                endif
+
+                cQuery += " AND D_E_L_E_T_ = '' "
+							
+				cAlias := GetNextAlias()
+								
+				dbUseArea( .T., 'TOPCONN', TCGENQRY(,,cQuery), cAlias, .T., .F.)
+												
+				dbSelectArea(cAlias)
+
+                cNossoNum := (cAlias)->NOSSONUM
+
+                cCodEmp := (cAlias)->EE_CODEMP
+
+                (cAlias)->(DBCLOSEAREA())
+			
+				//ITAU UTILIZA O MÓDULO 10 PARA CALCULO DO DAC DO NOSSO NUMERO
+				//BRADESCO UTILIZA O MODULO 11, BASE 7 PARA CALCULO DE DAC DO NOSSO NUMERO - obrigatório
+				
+				IF alltrim(SA6->A6_NUMBCO) == "341"  //itau			
+				
+					if empty(cNossoNum)
+					
+						nNossoNum := 08900000
+					
+					else
+						
+						nNossoNum := val(cNossoNum)
+					
+					endif				
+							
+					nNossoNum := nNossoNum + 1
+				
+					cNossoNum := Strzero(nNossoNum,8) 
+				
+					cDacNosso := alltrim(str(Modulo10(SUBSTR(ALLTRIM(SA6->A6_AGENCIA), 1, 4) + cctaModf + alltrim(SA6->A6_CARTEIR) + cNossoNum)))
+					
+					cQuery1 := " UPDATE SEE010 SET "
+					cQuery1 += " EE_ZNOSNUM = '" + cNossoNum + "', "
+					cQuery1 += " EE_ZDACNUM = '" + cDacNosso + "' "
+					cQuery1 += " WHERE EE_CONTA = '"+SA6->A6_NUMCON+"' "
+					cQuery1 += " AND EE_AGENCIA = '"+SA6->A6_AGENCIA+"' "
+					cQuery1 += " AND EE_CODIGO = '"+SA6->A6_NUMBCO+"' "
+							
+					If (TcSqlExec (cQuery1) < 0)
+							
+						ALERT("ERRO " + TcSQLError())
+							
+					endif				
+				
+				ELSE
+				
+					if alltrim(SA6->A6_NUMBCO) == "237" //bradesco					
+				
+						if empty(cNossoNum)
+						
+							nNossoNum := 00000002000
+						
+						else
+							
+							nNossoNum := val(cNossoNum)
+						
+						endif
+						
+    					nNossoNum := nNossoNum + 1
+						
+						cNossoNum := Strzero(nNossoNum,11) 
+						
+						cDacNosso := ALLTRIM(Mod11B(alltrim(SA6->A6_CARTEIR)+cNossoNum,2,7))
+						
+						cQuery1 := " UPDATE SEE010 SET "
+						cQuery1 += " EE_ZNOSNUM = '" + cNossoNum + "',  "
+						cQuery1 += " EE_ZDACNUM = '" + cDacNosso + "' "
+						cQuery1 += " WHERE EE_CONTA = '"+SA6->A6_NUMCON+"' "
+						cQuery1 += " AND EE_AGENCIA = '"+SA6->A6_AGENCIA+"'  "
+						cQuery1 += " AND EE_CODIGO = '"+SA6->A6_NUMBCO+"'  "
+								
+						If (TcSqlExec (cQuery1) < 0)
+								
+							ALERT("ERRO " + TcSQLError())
+								
+						endif
+						
+					else
+					
+						if alltrim(SA6->A6_NUMBCO) == "001" //Banco do Brasil							
+		
+							if empty(cNossoNum)
+							
+								nNossoNum := 30007020008900000
+							
+							else
+								
+								nNossoNum := val(cNossoNum)
+							
+							endif
+							
+							nNossoNum := nNossoNum + 1
+							
+							cNossoNum := ALLTRIM(cCodEmp) + strzero(val(substr(alltrim(str(nNossoNum)),8,17)),10)
+							
+							cDacNosso := ALLTRIM(Mod11BB(cNossoNum,2,9))
+							
+							cQuery1 := " UPDATE SEE010 SET "
+							cQuery1 += " EE_ZNOSNUM = '" + cNossoNum + "',  "
+							cQuery1 += " EE_ZDACNUM = '" + cDacNosso + "' "
+							cQuery1 += " WHERE EE_CONTA = '"+SA6->A6_NUMCON+"' "
+							cQuery1 += " AND EE_AGENCIA = '"+SA6->A6_AGENCIA+"'  "
+							cQuery1 += " AND EE_CODIGO = '"+SA6->A6_NUMBCO+"'  "
+							cQuery1 += " AND EE_SUBCTA = '002' "
+									
+							If (TcSqlExec (cQuery1) < 0)
+									
+								ALERT("ERRO " + TcSQLError())
+									
+							endif
+						
+						ELSE
+						
+							if alltrim(SA6->A6_NUMBCO) == "033" //SANTANDER
+							
+                                cNossoNum := substr(cNossoNum,1,7)
+								
+								if empty(cNossoNum)
+								
+									nNossoNum := 1100050  
+								
+								else
+									
+									nNossoNum := val(cNossoNum)
+								
+								endif
+								
+								nNossoNum := nNossoNum + 1
+								
+								cDacNosso := Mod11S(alltrim(str(nNossoNum)),2,9)
+								
+								cNossoNum := alltrim(str(nNossoNum)) + cDacNosso
+								
+								cQuery1 := " UPDATE SEE010 SET "
+								cQuery1 += " EE_ZNOSNUM = '" + cNossoNum + "',  "
+								cQuery1 += " EE_ZDACNUM = '" + cDacNosso + "' "
+								cQuery1 += " WHERE EE_CONTA = '"+SA6->A6_NUMCON+"' "
+								cQuery1 += " AND EE_AGENCIA = '"+SA6->A6_AGENCIA+"'  "
+								cQuery1 += " AND EE_CODIGO = '"+SA6->A6_NUMBCO+"'  "
+										
+								If (TcSqlExec (cQuery1) < 0)
+										
+									ALERT("ERRO " + TcSQLError())
+										
+								endif
+								
+							ENDIF						
+							
+						endif
+					
+					endif
+				
+				ENDIF
+				
+                //grava os NossoNum, DAC
+				RecLock( "SE1" , .F. )
+				
+					SE1->E1_NUMBCO := cNossoNum
+					SE1->E1_ZNOSNUM := cNossoNum
+					SE1->E1_ZDACNUM := cDacNosso
+				
+				MsUnlock()							
+		
+			ELSE
+				
+				cNossoNum := SE1->E1_NUMBCO			
+				cDacNosso := SE1->E1_ZDACNUM
+				
+			ENDIF
+
+			CB_RN_NN    := Ret_cBarra(aDadosBanco,;	
+			cNossoNum,;
+			(SE1->E1_VALOR-_nVlrAbat),;
+			iif(!empty(SE1->E1_VENCREA),SE1->E1_VENCREA,SE1->E1_VENCTO ))
+
+			aadd( aboltext, " " )
+			aadd( aboltext, " " )
+			aadd( aboltext, " " )
+
+			aBolText[1] := "Após o vencimento cobrar mora de R$ "+alltrim(transform(round(_vlrJurosDia,2),"@E 999,999,999.99"))+"  Sujeito a protesto se não for pago até 7 dias após vencimento"
+			
+			aDadosTit    :=  {AllTrim(SE1->E1_NUM)+AllTrim(SE1->E1_PARCELA),;             //Número do título 			[1]
+			SE1->E1_EMISSAO,;             											//Data da emissão do título [2]
+			Date(),;             												//Data da emissão do boleto [3]
+			SE1->E1_VENCTO,;             											//Data do vencimento        [4]
+			(SE1->E1_SALDO - _nVlrAbat),;             								//Valor do título           [5]
+			CB_RN_NN[3],;                                                       //Nosso número (Ver fórmula para calculo) [6]   CB_RN_NN[3],; 
+			"DM",;                                                              //ESPECIE 					[7]
+			SE1->E1_PARCELA }                                                       //PARCELA                   [8] 
+
+            cNF := AllTrim(SE1->E1_NUM)+" / "+Alltrim(SE1->E1_PREFIXO)+iif(!empty(AllTrim(SE1->E1_PARCELA))," - Parc: "+AllTrim(SE1->E1_PARCELA),"")
+
+            cTitulo := SE1->(E1_FILIAL+E1_CLIENTE+E1_LOJA+E1_PREFIXO+E1_NUM+E1_PARCELA+E1_TIPO)
+
+            //Definindo o diretório como a temporária do S.O. e o nome do arquivo com a data e hora (sem dois pontos)
+            cCaminho  := GetTempPath()
+
+            if MV_PAR21 == 1  //MULTIPLAS PAGINAS
+
+                //NUMERO+PARCELA+TIPO+CLIENTE+LOJA
+                cNomeArq := ALLTRIM(substr(cTitulo,nCmp1,TAMSX3("E1_NUM")[1]))
+
+                if !Empty(ALLTRIM(substr(cTitulo,nCmp2,TAMSX3("E1_PARCELA")[1])))
+
+                    cNomeArq +=  ALLTRIM(substr(cTitulo,nCmp2,TAMSX3("E1_PARCELA")[1])) + '_'
+                else
+                    
+                    cNomeArq += '_'
+                
+                endif
+
+                cNomeArq +=  ALLTRIM(substr(cTitulo,nCmp3,TAMSX3("E1_TIPO")[1])) + '_'
+
+                cNomeArq +=  ALLTRIM(substr(cTitulo,nCmp0,TAMSX3("E1_CLIENTE")[1])) + '_'
+
+                cNomeArq += Alltrim(substr(cTitulo,nCmp4,TAMSX3("E1_LOJA")[1]))
+                
+                cArquivo  := "Bol_" + ALLTRIM(cNomeArq) + "_"  + dToS(dDataGer) + "_" + StrTran(cHoraGer, ':', '-')
+
+                //Criando o objeto do FMSPrinter
+                oPrint := FWMSPrinter():New(cArquivo, IMP_PDF, .F., "", .T., , @oPrint, "", , , , .T.)
+
+            ELSE
+
+                IF !lStartPrint      
+
+                    cArquivo  := "Boletos_" + dToS(dDataGer) + "_" + StrTran(cHoraGer, ':', '-')
+
+                    //Criando o objeto do FMSPrinter
+                    oPrint := FWMSPrinter():New(cArquivo, IMP_PDF, .F., "", .T., , @oPrint, "", , , , .T.)
+
+                ENDIF
+
+            ENDIF
+
+            //Setando os atributos necessários do relatório
+            oPrint:SetResolution(72)
+            oPrint:SetPortrait()
+            oPrint:SetPaperSize(DMPAPER_A4)
+            oPrint:SetMargin(20, 10, 20, 15) //l-t-r-b            
+
+			FWM_Boleto(cTitulo)
+
+            IF MV_PAR21 == 1
+
+                oPrint:Preview()
+
+            ENDIF
+
+			nAtu++
+        
+			IncProc("Boletos processados: " + cValToChar(nAtu) + " de " + cValToChar(nRegs) + "...")
+
+	next
+    
+	/*
 	While !SE1->( Eof() )
         //Caso esteja marcado, aumenta o contador
         If oMarkBrow:IsMark(cMarca)
@@ -457,13 +875,6 @@ Static Function Imp_mark()
 
             if MV_PAR21 == 1  //MULTIPLAS PAGINAS
 
-                //E1_FILIAL+E1_CLIENTE+E1_LOJA+E1_PREFIXO+E1_NUM+E1_PARCELA+E1_TIPO
-                nCmp0 := TAMSX3("E1_FILIAL")[1]+1
-                nCmp1 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+1
-                nCmp2 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+TAMSX3("E1_NUM")[1]+1
-                nCmp3 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+TAMSX3("E1_LOJA")[1]+TAMSX3("E1_PREFIXO")[1]+TAMSX3("E1_NUM")[1]+TAMSX3("E1_PARCELA")[1]+1
-                nCmp4 := TAMSX3("E1_FILIAL")[1]+TAMSX3("E1_CLIENTE")[1]+1
-
                 //NUMERO+PARCELA+TIPO+CLIENTE+LOJA
                 cNomeArq := ALLTRIM(substr(cTitulo,nCmp1,TAMSX3("E1_NUM")[1]))
 
@@ -514,12 +925,19 @@ Static Function Imp_mark()
 
             ENDIF
 
+			nAtu++
+        
+			IncProc("Boletos processados: " + cValToChar(nAtu) + " de " + cValToChar(nRegs) + "...")
+
         EndIf
+
+
          
         //Pulando registro
         SE1->( dbSkip() )
 
     EndDo
+	*/
 
     if lStartPrint .and.  MV_PAR21 == 2
 
@@ -536,6 +954,7 @@ Return NIL
 Static function FWM_Boleto(cTitulo)
 
     Local lFicha := .F.
+	Local aArea      := GetArea()
 
     //Linhas e colunas
     Private nLin      := 010
@@ -606,6 +1025,7 @@ Static function FWM_Boleto(cTitulo)
 
     ENDIF
 
+	RestArea(aArea)
 
 Return
 
@@ -807,7 +1227,7 @@ static function Cab(nLinIni)
 
     cInf :=  "Impresso: " + alltrim(cNomeUsr) + " - "  + dtoc(dDataGer) + " - " + alltrim(cHoraGer)
 
-    oPrint:SayAlign(nLinC+023, nColFin-105, cInf, oFtA05, 100, nTamLin, BLACK, PAD_RIGHT, 0)	
+    oPrint:SayAlign(nLinC+023, nColFin-200, cInf, oFtA05, 200, nTamLin, BLACK, PAD_RIGHT, 0)	
 
     dashline(nLinC+030,nColIni,nColFin,2,3)
 
