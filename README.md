@@ -8,4 +8,6 @@ AO UTILIZAR OS FONTES, FAVOR MANTER OS CRÉDITOS DOS AUTORES!
 /LOGISTICA/Ord_Prod.prw --> Imprime ordem de produção
 /LOGISTICA/Sep_Ped.prw --> Imprime ordem de separação
 
+FONTES DISPONIBILIZADOS APENAS PARA USO EDUCACIONAL!!!!!
+
 Carlos Abreu
